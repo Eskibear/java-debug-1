@@ -53,10 +53,11 @@ public class DebugUtility {
     public static final String HOSTNAME = "hostname";
     public static final String PORT = "port";
     public static final String TIMEOUT = "timeout";
+    public static final String DEBUG = "debug";
 
     /**
      * Launch a debuggee in suspend mode.
-     * @see #launch(VirtualMachineManager, String, String, String, String, String)
+     * @see #launch(VirtualMachineManager, String, String, String, String, String, String, String, boolean)
      */
     public static IDebugSession launch(VirtualMachineManager vmManager,
             String mainClass,
@@ -65,7 +66,8 @@ public class DebugUtility {
             List<String> modulePaths,
             List<String> classPaths,
             String cwd,
-            String[] envVars)
+            String[] envVars,
+            boolean noDebug)
             throws IOException, IllegalConnectorArgumentsException, VMStartException {
         return DebugUtility.launch(vmManager,
                 mainClass,
@@ -74,7 +76,8 @@ public class DebugUtility {
                 String.join(File.pathSeparator, modulePaths),
                 String.join(File.pathSeparator, classPaths),
                 cwd,
-                envVars);
+                envVars,
+                noDebug);
     }
 
     /**
@@ -97,6 +100,8 @@ public class DebugUtility {
      * @param envVars
      *            array of strings, each element of which has environment variable settings in the format name=value.
      *            or null if the subprocess should inherit the environment of the current process.
+     * @param noDebug
+     *            whether it is launched without debugging
      * @return an instance of IDebugSession.
      * @throws IOException
      *             when unable to launch.
@@ -113,7 +118,8 @@ public class DebugUtility {
             String modulePaths,
             String classPaths,
             String cwd,
-            String[] envVars)
+            String[] envVars,
+            boolean noDebug)
             throws IOException, IllegalConnectorArgumentsException, VMStartException {
         List<LaunchingConnector> connectors = vmManager.launchingConnectors();
         LaunchingConnector connector = connectors.get(0);
@@ -131,7 +137,9 @@ public class DebugUtility {
         }
 
         Map<String, Argument> arguments = connector.defaultArguments();
-        arguments.get(SUSPEND).setValue("true");
+        if (!noDebug) {
+            arguments.get(SUSPEND).setValue("true");
+        }
 
         String options = "";
         if (StringUtils.isNotBlank(vmArguments)) {
@@ -163,6 +171,9 @@ public class DebugUtility {
             arguments.get(ENV).setValue(encodeArrayArgument(envVars));
         }
 
+        if (arguments.get(DEBUG) != null) {
+            arguments.get(DEBUG).setValue(noDebug ? "false" : "true");
+        }
         VirtualMachine vm = connector.launch(arguments);
         // workaround for JDT bug.
         // vm.version() calls org.eclipse.jdi.internal.MirrorImpl#requestVM

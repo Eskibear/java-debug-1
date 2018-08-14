@@ -15,6 +15,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -36,6 +38,7 @@ import com.microsoft.java.debug.core.DebugException;
 import com.microsoft.java.debug.core.DebugSession;
 import com.microsoft.java.debug.core.DebugUtility;
 import com.microsoft.java.debug.core.IDebugSession;
+import com.microsoft.java.debug.core.RunSession;
 import com.microsoft.java.debug.core.adapter.AdapterUtils;
 import com.microsoft.java.debug.core.adapter.Constants;
 import com.microsoft.java.debug.core.adapter.ErrorCode;
@@ -86,7 +89,7 @@ public class LaunchRequestHandler implements IDebugRequestHandler {
         context.setAttached(false);
         context.setSourcePaths(launchArguments.sourcePaths);
         context.setVmStopOnEntry(launchArguments.stopOnEntry);
-        context.setDebugging(!launchArguments.noDebug);
+        context.setDebugMode(!launchArguments.noDebug);
         context.setMainClass(parseMainClassWithoutModuleName(launchArguments.mainClass));
         context.setStepFilters(launchArguments.stepFilters);
 
@@ -109,34 +112,89 @@ public class LaunchRequestHandler implements IDebugRequestHandler {
             launchArguments.vmArgs = String.format("%s -Dfile.encoding=%s", launchArguments.vmArgs, context.getDebuggeeEncoding().name());
         }
 
-        return launch(launchArguments, response, context).thenCompose(res -> {
-            if (res.success) {
+        if (context.isDebugMode()) {
+            return launch(launchArguments, response, context).thenCompose(res -> {
+                if (res.success) {
 
-                Map<String, Object> options = new HashMap<>();
-                options.put(Constants.DEBUGGEE_ENCODING, context.getDebuggeeEncoding());
-                if (launchArguments.projectName != null) {
-                    options.put(Constants.PROJECT_NAME, launchArguments.projectName);
+                    Map<String, Object> options = new HashMap<>();
+                    options.put(Constants.DEBUGGEE_ENCODING, context.getDebuggeeEncoding());
+                    if (launchArguments.projectName != null) {
+                        options.put(Constants.PROJECT_NAME, launchArguments.projectName);
+                    }
+                    if (launchArguments.mainClass != null) {
+                        options.put(Constants.MAIN_CLASS, launchArguments.mainClass);
+                    }
+
+                    // TODO: Clean up the initialize mechanism
+                    ISourceLookUpProvider sourceProvider = context.getProvider(ISourceLookUpProvider.class);
+                    sourceProvider.initialize(context, options);
+                    IEvaluationProvider evaluationProvider = context.getProvider(IEvaluationProvider.class);
+                    evaluationProvider.initialize(context, options);
+                    IHotCodeReplaceProvider hcrProvider = context.getProvider(IHotCodeReplaceProvider.class);
+                    hcrProvider.initialize(context, options);
+                    ICompletionsProvider completionsProvider = context.getProvider(ICompletionsProvider.class);
+                    completionsProvider.initialize(context, options);
+
+                    // Send an InitializedEvent to indicate that the debugger is ready to accept configuration requests
+                    // (e.g. SetBreakpointsRequest, SetExceptionBreakpointsRequest).
+                    context.getProtocolServer().sendEvent(new Events.InitializedEvent());
                 }
-                if (launchArguments.mainClass != null) {
-                    options.put(Constants.MAIN_CLASS, launchArguments.mainClass);
-                }
-
-                // TODO: Clean up the initialize mechanism
-                ISourceLookUpProvider sourceProvider = context.getProvider(ISourceLookUpProvider.class);
-                sourceProvider.initialize(context, options);
-                IEvaluationProvider evaluationProvider = context.getProvider(IEvaluationProvider.class);
-                evaluationProvider.initialize(context, options);
-                IHotCodeReplaceProvider hcrProvider = context.getProvider(IHotCodeReplaceProvider.class);
-                hcrProvider.initialize(context, options);
-                ICompletionsProvider completionsProvider = context.getProvider(ICompletionsProvider.class);
-                completionsProvider.initialize(context, options);
-
-                // Send an InitializedEvent to indicate that the debugger is ready to accept configuration requests
-                // (e.g. SetBreakpointsRequest, SetExceptionBreakpointsRequest).
-                context.getProtocolServer().sendEvent(new Events.InitializedEvent());
+                return CompletableFuture.completedFuture(res);
+            });
+        } else {
+            String[] cmds = constructLaunchCommands(launchArguments, false, null);
+            File workingDir = null;
+            if (launchArguments.cwd != null && Files.isDirectory(Paths.get(launchArguments.cwd))) {
+                workingDir = new File(launchArguments.cwd);
             }
-            return CompletableFuture.completedFuture(res);
-        });
+
+            String[] envVars = null;
+            if (launchArguments.env != null && !launchArguments.env.isEmpty()) {
+                Map<String, String> environment = new HashMap<>(System.getenv());
+                List<String> duplicated = new ArrayList<>();
+                for (Entry<String, String> entry : launchArguments.env.entrySet()) {
+                    if (environment.containsKey(entry.getKey())) {
+                        duplicated.add(entry.getKey());
+                    }
+                    environment.put(entry.getKey(), entry.getValue());
+                }
+                // For duplicated variables, show a warning message.
+                if (!duplicated.isEmpty()) {
+                    logger.warning(String.format("There are duplicated environment variables. The values specified in launch.json will be used. "
+                            + "Here are the duplicated entries: %s.", String.join(",", duplicated)));
+                }
+
+                envVars = new String[environment.size()];
+                int i = 0;
+                for (Entry<String, String> entry : environment.entrySet()) {
+                    envVars[i++] = entry.getKey() + "=" + entry.getValue();
+                }
+            }
+
+            try {
+                Process process = Runtime.getRuntime().exec(cmds, envVars, workingDir);
+                Runtime.getRuntime().addShutdownHook(new Thread() {
+                    public void run() {
+                        context.getProtocolServer().sendEvent(new Events.TerminatedEvent());
+                    }
+                });
+                ProcessConsole debuggeeConsole = new ProcessConsole(process, "Debuggee", context.getDebuggeeEncoding());
+                debuggeeConsole.onStdout((output) -> {
+                    // When DA receives a new OutputEvent, it just shows that on Debug Console and doesn't affect the DA's dispatching workflow.
+                    // That means the debugger can send OutputEvent to DA at any time.
+                    context.getProtocolServer().sendEvent(Events.OutputEvent.createStdoutOutput(output));
+                });
+
+                debuggeeConsole.onStderr((err) -> {
+                    context.getProtocolServer().sendEvent(Events.OutputEvent.createStderrOutput(err));
+                });
+                debuggeeConsole.start();
+                context.setDebugSession(new RunSession(process));
+            } catch (IOException e) {
+                logger.warning(e.toString());
+            }
+            return CompletableFuture.completedFuture(response);
+        }
     }
 
     private CompletableFuture<Response> launch(LaunchArguments launchArguments, Response response, IDebugAdapterContext context) {
@@ -277,7 +335,8 @@ public class LaunchRequestHandler implements IDebugRequestHandler {
                     Arrays.asList(launchArguments.modulePaths),
                     Arrays.asList(launchArguments.classPaths),
                     launchArguments.cwd,
-                    envVars);
+                    envVars,
+                    launchArguments.noDebug);
             context.setDebugSession(debugSession);
 
             logger.info("Launching debuggee VM succeeded.");
@@ -317,7 +376,9 @@ public class LaunchRequestHandler implements IDebugRequestHandler {
 
         List<String> launchCmds = new ArrayList<>();
         launchCmds.add(System.getProperty("java.home") + slash + "bin" + slash + "java");
-        launchCmds.add(String.format("-agentlib:jdwp=transport=dt_socket,server=%s,suspend=y,address=%s", serverMode ? "y" : "n", address));
+        if (StringUtils.isNotEmpty(address)) {
+            launchCmds.add(String.format("-agentlib:jdwp=transport=dt_socket,server=%s,suspend=y,address=%s", serverMode ? "y" : "n", address));
+        }
         if (StringUtils.isNotBlank(launchArguments.vmArgs)) {
             launchCmds.addAll(parseArguments(launchArguments.vmArgs));
         }

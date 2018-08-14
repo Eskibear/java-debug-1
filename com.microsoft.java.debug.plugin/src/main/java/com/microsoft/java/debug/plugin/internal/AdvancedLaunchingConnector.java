@@ -53,6 +53,10 @@ public class AdvancedLaunchingConnector extends SocketLaunchingConnectorImpl imp
         envArg.setValue(null);
         defaultArgs.put(DebugUtility.ENV, envArg);
 
+        Argument debugModeArg = new AdvancedStringArgumentImpl(DebugUtility.DEBUG, "Debug mode", DebugUtility.DEBUG, false);
+        debugModeArg.setValue(null);
+        defaultArgs.put(DebugUtility.DEBUG, debugModeArg);
+
         return defaultArgs;
     }
 
@@ -76,7 +80,7 @@ public class AdvancedLaunchingConnector extends SocketLaunchingConnectorImpl imp
         } catch (IllegalArgumentException e) {
             // do nothing.
         }
-
+        boolean debugMode = Boolean.valueOf(connectionArgs.get(DebugUtility.DEBUG).value());
         SocketListeningConnectorImpl listenConnector = new SocketListeningConnectorImpl(
                 virtualMachineManager());
         Map<String, Connector.Argument> args = listenConnector.defaultArguments();
@@ -105,11 +109,14 @@ public class AdvancedLaunchingConnector extends SocketLaunchingConnectorImpl imp
         boolean suspend = Boolean.valueOf(launchingOptions.get(DebugUtility.SUSPEND).value());
         final String javaOptions = launchingOptions.get(DebugUtility.OPTIONS).value();
         final String main = launchingOptions.get(DebugUtility.MAIN).value();
+        boolean debugMode = Boolean.valueOf(launchingOptions.get(DebugUtility.DEBUG).value());
 
         StringBuilder execString = new StringBuilder();
         execString.append("\"" + javaHome + slash + "bin" + slash + javaExec + "\"");
-        execString.append(" -Xdebug -Xnoagent -Djava.compiler=NONE");
-        execString.append(" -Xrunjdwp:transport=dt_socket,address=" + address + ",server=n,suspend=" + (suspend ? "y" : "n"));
+        if (debugMode) {
+            execString.append(" -Xdebug -Xnoagent -Djava.compiler=NONE");
+            execString.append(" -Xrunjdwp:transport=dt_socket,address=" + address + ",server=n,suspend=" + (suspend ? "y" : "n"));
+        }
         if (javaOptions != null) {
             execString.append(" " + javaOptions);
         }

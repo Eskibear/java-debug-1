@@ -239,7 +239,7 @@ public class DebugAdapterContext implements IDebugAdapterContext {
     }
 
     @Override
-    public void setDebugging(boolean debugging) {
+    public void setDebugMode(boolean debugging) {
         this.isDebugMode = debugging;
     }
 }

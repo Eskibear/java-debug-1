@@ -104,5 +104,5 @@ public interface IDebugAdapterContext {
 
     boolean isDebugMode();
 
-    void setDebugging(boolean debugging);
+    void setDebugMode(boolean debugging);
 }

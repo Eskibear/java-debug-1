@@ -52,7 +52,7 @@ public class DebugSessionFactory {
             String projectRoot = new File(rootPath, name).getAbsolutePath();
             try {
                 final IDebugSession debugSession = DebugUtility.launch(Bootstrap.virtualMachineManager(), mainClass, "", "",
-                        null, new File(projectRoot, "bin").getAbsolutePath(), null, null);
+                        null, new File(projectRoot, "bin").getAbsolutePath(), null, null, false);
                 debugSession.getEventHub().events().subscribe(debugEvent -> {
                     if (debugEvent.event instanceof VMDisconnectEvent) {
                         try {
